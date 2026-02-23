@@ -1,0 +1,15 @@
+{
+  "description": "Validates agent output against contracts",
+  "hooks": {
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/contract-validate.py"
+          }
+        ]
+      }
+    ]
+  }
+}

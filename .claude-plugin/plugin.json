@@ -1,0 +1,8 @@
+{
+  "name": "agent-governance",
+  "version": "0.1.0",
+  "description": "Handoff contracts and tool auditing for multi-agent workflows",
+  "author": {
+    "name": "Vitaly D."
+  }
+}
