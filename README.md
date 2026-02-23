@@ -38,11 +38,8 @@ flowchart LR
 # 1. Clone into plugins
 git clone https://github.com/t3chn/agent-governance.git ~/.claude/plugins/agent-governance
 
-# 2. Install SubagentStart hook to settings.json
+# 2. Install hooks (SubagentStart + SubagentStop) to settings.json
 bash ~/.claude/plugins/agent-governance/setup.sh
-
-# 3. Enable plugin in Claude Code
-# Settings → Plugins → agent-governance
 
 # 4. Verify
 echo '{"agent_type":"Bash","cwd":"/tmp"}' | python3 ~/.claude/plugins/agent-governance/hooks/agent-audit.py
@@ -124,10 +121,10 @@ contract_ref: ./contracts/reviewer-contract.md
 
 | Hook | Event | Source | What it does |
 |------|-------|--------|--------------|
-| `agent-audit.py` | SubagentStart | `settings.json`* | Finds agent `.md` → parses `contract:` → injects expectations via `additionalContext` |
-| `contract-validate.py` | SubagentStop | plugin `hooks.json` | Checks output signals + structured schema → warnings to stderr |
+| `agent-audit.py` | SubagentStart | `settings.json` | Finds agent `.md` → parses `contract:` → injects expectations via `additionalContext` |
+| `contract-validate.py` | SubagentStop | `settings.json` | Checks output signals + structured schema → warnings to stderr |
 
-*\*SubagentStart must run from `settings.json` because `additionalContext` injection doesn't work from plugin hooks ([#16538](https://github.com/anthropics/claude-code/issues/16538)).*
+Both hooks are installed to `settings.json` by `setup.sh`. Plugin hooks can't inject `additionalContext` ([#16538](https://github.com/anthropics/claude-code/issues/16538)) and local plugin discovery is unreliable, so `settings.json` is the reliable path for both.
 
 Built-in agents are skipped: Bash, Explore, Plan, Task, general-purpose, code-simplifier, code-reviewer, code-explorer, code-architect, statusline-setup, claude-code-guide.
 
