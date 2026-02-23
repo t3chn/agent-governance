@@ -1,19 +1,61 @@
 # agent-governance
 
-Handoff contracts and tool auditing for Claude Code multi-agent workflows.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-3776AB.svg)](https://python.org)
+[![Claude Code Plugin](https://img.shields.io/badge/Claude_Code-plugin-D97757.svg)](https://docs.anthropic.com/en/docs/claude-code)
 
-## Problem
+Handoff contracts for Claude Code multi-agent workflows. Define what agents must produce, verify they delivered.
 
-When multiple agents collaborate, there's no way to enforce what an agent should produce or verify it delivered. Agents get vague instructions and return unpredictable output.
+## Why
 
-## Solution
+Multi-agent systems fail silently. Agent A spawns Agent B with vague instructions, B returns something unpredictable, A tries to use it. No contract, no validation, no feedback loop.
 
-Add a `contract:` block to agent frontmatter. Two hooks enforce it:
+**agent-governance** adds a `contract:` block to agent frontmatter:
 
-- **SubagentStart** — injects contract expectations into the agent's context
-- **SubagentStop** — validates output against contract signals and schema
+```yaml
+contract:
+  version: "1.0"
+  output_signals:
+    - "contains findings with severity levels"
+    - "includes specific file paths and line numbers"
+```
+
+Two hooks enforce it at runtime:
+
+```mermaid
+flowchart LR
+    A[Agent spawned] -->|SubagentStart| B[agent-audit.py]
+    B -->|inject contract\ninto context| C[Agent runs with\nexpectations]
+    C -->|SubagentStop| D[contract-validate.py]
+    D -->|check signals\n& schema| E{Pass?}
+    E -->|yes| F[Silent]
+    E -->|no| G[Warnings → stderr]
+```
+
+## Quick start
+
+```bash
+# 1. Clone into plugins
+git clone https://github.com/t3chn/agent-governance.git ~/.claude/plugins/agent-governance
+
+# 2. Install SubagentStart hook to settings.json
+bash ~/.claude/plugins/agent-governance/setup.sh
+
+# 3. Enable plugin in Claude Code
+# Settings → Plugins → agent-governance
+
+# 4. Verify
+echo '{"agent_type":"Bash","cwd":"/tmp"}' | python3 ~/.claude/plugins/agent-governance/hooks/agent-audit.py
+# → silent (built-in agent, skipped)
+```
 
 ## Contract format
+
+Add a `contract:` block to any agent's frontmatter (`.claude/agents/*.md`):
+
+### Signal mode (default)
+
+Signals are natural language descriptions of expected output. The hook extracts keywords (4+ chars) and checks that a majority appear in the agent's response — heuristic matching, not semantic analysis.
 
 ```yaml
 ---
@@ -32,31 +74,80 @@ contract:
 ---
 ```
 
-### Signal mode (default)
+**Writing good signals:** use specific words that would appear in the output. Each signal should have 2+ keywords of 4+ characters.
 
-Output signals are natural language descriptions of expected output. The hook checks for keyword presence — no structured format required.
+| Signal | Quality | Why |
+|--------|---------|-----|
+| `"contains severity assessment with critical/high/medium ratings"` | Good | Clear keywords |
+| `"includes file paths and line numbers for each finding"` | Good | Specific terms |
+| `"has output"` | Bad | No extractable keywords |
 
 ### Structured mode
 
-For machine-readable output, set `output_mode: structured` and define `output_schema`. The agent includes a JSON envelope:
+For machine-readable output, set `output_mode: structured`. The agent wraps key data in an HTML comment:
 
 ```
-<!-- CONTRACT_OUTPUT {"findings": [...], "summary": "..."} -->
+<!-- CONTRACT_OUTPUT {"findings": [...], "severity_summary": {...}} -->
 ```
 
-The hook validates required fields and types.
+The hook validates required fields and types against `output_schema`:
 
-## Install
-
-```bash
-# Clone
-git clone https://github.com/vitaly/agent-governance.git ~/.claude/plugins/agent-governance
-
-# Install SubagentStart hook to settings.json (required — plugin hooks can't inject context due to bug #16538)
-bash ~/.claude/plugins/agent-governance/setup.sh
+```yaml
+contract:
+  version: "1.0"
+  output_mode: structured
+  output_schema:
+    required: [findings, severity_summary]
+    properties:
+      findings:
+        type: array
+      severity_summary:
+        type: object
+  output_signals:
+    - "includes severity assessment"
 ```
 
-Enable the plugin in Claude Code settings.
+Validation uses `jsonschema` if installed, falls back to manual required-field checks.
+
+### External contracts
+
+For complex contracts, reference a separate file:
+
+```yaml
+---
+name: my-agent
+contract_ref: ./contracts/reviewer-contract.md
+---
+```
+
+## How it works
+
+| Hook | Event | Source | What it does |
+|------|-------|--------|--------------|
+| `agent-audit.py` | SubagentStart | `settings.json`* | Finds agent `.md` → parses `contract:` → injects expectations via `additionalContext` |
+| `contract-validate.py` | SubagentStop | plugin `hooks.json` | Checks output signals + structured schema → warnings to stderr |
+
+*\*SubagentStart must run from `settings.json` because `additionalContext` injection doesn't work from plugin hooks ([#16538](https://github.com/anthropics/claude-code/issues/16538)).*
+
+Built-in agents are skipped: Bash, Explore, Plan, Task, general-purpose, code-simplifier, code-reviewer, code-explorer, code-architect, statusline-setup, claude-code-guide.
+
+## Design decisions
+
+- **Non-blocking.** Both hooks always exit 0. Warnings go to stderr, never prevent agent completion. This is a deliberate trade-off: contracts improve signal quality, not enforce correctness gates.
+- **Stdlib only.** No pip install required. Optional `jsonschema` for richer validation.
+- **Heuristic matching.** Signal mode uses keyword extraction, not LLM-based semantic comparison. Fast, predictable, zero API cost.
+
+## Structure
+
+```
+.claude-plugin/plugin.json     Plugin manifest
+hooks/hooks.json               SubagentStop hook config
+hooks/lib_contract.py          Shared: discovery, parsing, validation
+hooks/agent-audit.py           SubagentStart context injection
+hooks/contract-validate.py     SubagentStop output validation
+skills/agent-contracts/        Documentation skill for Claude Code
+setup.sh                       Install/uninstall SubagentStart hook
+```
 
 ## Uninstall
 
@@ -64,30 +155,21 @@ Enable the plugin in Claude Code settings.
 bash ~/.claude/plugins/agent-governance/setup.sh --uninstall
 ```
 
-## Structure
+## Debugging
 
-```
-.claude-plugin/plugin.json     Plugin manifest
-hooks/hooks.json               SubagentStop hook (runs from plugin)
-hooks/lib_contract.py          Shared library (stdlib only)
-hooks/agent-audit.py           SubagentStart hook (installed to settings.json)
-hooks/contract-validate.py     SubagentStop hook (runs from plugin)
-skills/agent-contracts/        Documentation skill
-setup.sh                       Install/uninstall SubagentStart hook
-```
+Logs: `/tmp/agent-governance-debug.log`
 
-## How it works
-
-1. Agent spawned → `agent-audit.py` finds its `.md` file → parses `contract:` → injects expectations via `additionalContext`
-2. Agent finishes → `contract-validate.py` checks output signals (keyword match) and structured output (schema validation)
-3. Warnings go to stderr. Hooks never block agent completion (always exit 0).
-
-Built-in agents (Bash, Explore, Plan, etc.) are skipped automatically.
+| Issue | Fix |
+|-------|-----|
+| No validation running | Check plugin is enabled + `setup.sh` was run |
+| Signals always fail | Use specific keywords (4+ chars), check the log for extracted keywords |
+| Structured output not found | Agent must include `<!-- CONTRACT_OUTPUT {...} -->` in response |
 
 ## Requirements
 
 - Python 3.8+
-- No external dependencies (stdlib only)
+- Zero required dependencies (stdlib only, optional `jsonschema`)
+- Claude Code with plugin support
 
 ## License
 
